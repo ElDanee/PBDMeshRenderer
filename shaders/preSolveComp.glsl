@@ -54,14 +54,14 @@ void main(){
         corrections.data[texelCoord].pad = 1; //reset
         
         //Stick to place
-        bool stick = true;
-        if(stick && (texelCoord < 10000)){
+        bool stick = false;
+        if(stick && (texelCoord < 900)){
             velocities.data[texelCoord].velocity = vec3(0);
             finalPositions.pos[texelCoord].pad = 1000000000.f;
             finalPositions.pos[texelCoord].pos = basePositions.pos[texelCoord].pos;
         } else {
             finalPositions.pos[texelCoord].pad = 1;// velocities.data[texelCoord].mass;
-            velocities.data[texelCoord].velocity += 0.01 * uData.acceleration.yxz * uData.timeStep;
+            velocities.data[texelCoord].velocity += uData.acceleration.xyz * uData.timeStep;
             finalPositions.pos[texelCoord].pos = basePositions.pos[texelCoord].pos + uData.timeStep * velocities.data[texelCoord].velocity;
             //finalPositions.pos[texelCoord].pos = basePositions.pos[texelCoord].pos + uData.timeStep * velocities.data[texelCoord].velocity + 0.5f * uData.acceleration * pow(uData.timeStep, 2);
         }

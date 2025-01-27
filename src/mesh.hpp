@@ -30,14 +30,16 @@ protected:
     AllocatedBuffer vertexDynamicsBuffer; //Vertex velocity and mass
     AllocatedBuffer correctionBuffer; //Jacobi solver correction buffer
     
-    VkDescriptorSetLayout computeSolveDSLayout;
+    VkDescriptorSetLayout computePSolveDSLayout;
     VkDescriptorSetLayout uniformComputeDSLayout;
-    
-    VkPipelineLayout computeSolvePLayout;
+    VkDescriptorSetLayout computeSolveDSLayout;
     
     VkDescriptorSet computePreSolveDSet;
     VkDescriptorSet computePostSolveDSet;
-
+    VkDescriptorSet computeSolveDSet;
+    
+    VkPipelineLayout computeSolvePLayout;
+    
     VkPipeline computePreSolvePipeline;
     VkPipeline computePostSolvePipeline;
     
@@ -70,9 +72,12 @@ public:
 
 class IConstraint3D{
 public:
-    AllocatedBuffer volumeConstraintsBuffer;
+    AllocatedBuffer volumeValBuffer;
+    AllocatedBuffer volumeIdxBuffer;
     std::vector<VolumeConstraint> vConstraints;
     std::vector<std::vector<VolumeConstraint>> coloringVConstraints;
+    std::vector<uint32_t> volumeIdxList;
+    std::vector<float> volumeList;
     
     VkDescriptorSetLayout compute3DDSLayout;
     std::vector<VkDescriptorSet> compute3DConstraintsDSet;
@@ -82,7 +87,7 @@ public:
     
     void create_volume_descriptor_sets(VulkanEngine* engine);
     void create_volume_pipeline(VulkanEngine* engine);
-    void solve_volume_constraints(VkCommandBuffer cmd);
+    void solve_volume_constraints(VkCommandBuffer cmd, VkDescriptorSet computeDSet, VkDescriptorSet uniformDSet);
 };
 
 class PBDMesh2D : public PBDMesh, public IConstraint2D{

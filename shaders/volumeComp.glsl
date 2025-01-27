@@ -65,7 +65,7 @@ void main(){
         float dP = -6*(v - vConst.volume) / (w1 * pow(length(grad1),2) +
                                              w2 * pow(length(grad2),2) +
                                              w3 * pow(length(grad3),2) +
-                                             w4 * pow(length(grad4),2));
+                                             w4 * pow(length(grad4),2) + 1.5f);
         
         corrections.data[vConst.v1].dP += dP * w1 * grad1;
         corrections.data[vConst.v1].pad += 1;

@@ -51,7 +51,7 @@ const float radius = 2.f;
 void main(){
     int texelCoord = int(gl_GlobalInvocationID.x);
     if(texelCoord < basePositions.pos.length()){
-        vec3 f = basePositions.pos[texelCoord].pos + (corrections.data[texelCoord].dP * .1f);//1.f/corrections.data[texelCoord].pad);
+        vec3 f = basePositions.pos[texelCoord].pos + (corrections.data[texelCoord].dP * .25f);// 1.f/corrections.data[texelCoord].pad);//1.f/corrections.data[texelCoord].pad);
         
         //Sphere check
         /*if(length(f - sCenter) <= radius){
@@ -60,13 +60,13 @@ void main(){
         }*/
         
         //Plane check
-        if(f.y > 20){
-            f.y = 20;
+        if(f.y > 10){
+            f.y = 10;
             velocities.data[texelCoord].velocity = vec3(0.f);
         } else {
-            velocities.data[texelCoord].velocity += corrections.data[texelCoord].dP * .1f;// / (uData.timeStep);
+            velocities.data[texelCoord].velocity += corrections.data[texelCoord].dP * .25f;// / (uData.timeStep);
+            //velocities.data[texelCoord].velocity = (f - finalPositions.pos[texelCoord].pos) * .25f / (uData.timeStep);
         }
-        //velocities.data[texelCoord].velocity = (f - finalPositions.pos[texelCoord].pos) / (uData.timeStep);
         
         finalPositions.pos[texelCoord].pos = f;
     }

@@ -389,6 +389,76 @@ void VulkanEngine::init_pipelines()
 {
     build_soft_body_pipeline();
     //build_compute_pipeline();
+    build_plane_pipeline();
+}
+
+void VulkanEngine::build_plane_pipeline(){
+    VkShaderModule vertShader;
+    VkShaderModule fragShader;
+    
+    { //Load shader modules
+        if (!vkutil::load_shader_module("../shaders/plane.vert.spv", _device, &vertShader)) {
+            fmt::println("Error when building the triangle mesh shader module");
+        }
+        if (!vkutil::load_shader_module("../shaders/base.frag.spv", _device, &fragShader)) {
+            fmt::println("Error when building the triangle fragment shader module");
+        }
+    }
+    
+    {//PipelineLayout creation
+        VkDescriptorSetLayout layouts[] = {_gpuSceneDataDescriptorLayout};
+        //Push Constants
+        VkPushConstantRange matrixRange{};
+        matrixRange.offset = 0;
+        matrixRange.size = sizeof(VertPushConstants);
+        matrixRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+        
+        VkPipelineLayoutCreateInfo mesh_layout_info = vkinit::pipeline_layout_create_info();
+        mesh_layout_info.setLayoutCount = 1;
+        mesh_layout_info.pSetLayouts = layouts;
+        mesh_layout_info.pPushConstantRanges = &matrixRange;
+        mesh_layout_info.pushConstantRangeCount = 1;
+        
+        VK_CHECK(vkCreatePipelineLayout(_device, &mesh_layout_info, nullptr, &planePLayout));
+        _mainDeletionQueue.push_function([=, this]() {
+            vkDestroyPipelineLayout(_device, planePLayout, nullptr);
+        });
+    }
+    
+    {//Pipeline creation
+        PipelineBuilder pipelineBuilder;
+        pipelineBuilder.set_shaders(vertShader, fragShader);
+        
+        pipelineBuilder.set_input_topology(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
+        pipelineBuilder.set_polygon_mode(VK_POLYGON_MODE_FILL);
+        pipelineBuilder.set_cull_mode(VK_CULL_MODE_NONE, VK_FRONT_FACE_CLOCKWISE);
+        pipelineBuilder.set_multisampling_none();
+        pipelineBuilder.disable_blending();
+        pipelineBuilder.enable_depthtest(true, VK_COMPARE_OP_GREATER_OR_EQUAL);
+        
+        //render format
+        pipelineBuilder.set_color_attachment_format(_drawImage.imageFormat);
+        pipelineBuilder.set_depth_format(_depthImage.imageFormat);
+        
+        pipelineBuilder._pipelineLayout = planePLayout;
+        
+        planePipeline = pipelineBuilder.build_pipeline(_device);
+        
+        _mainDeletionQueue.push_function([=, this]() {
+            vkDestroyPipeline(_device, planePipeline, nullptr);
+        });
+    }
+    
+    vkDestroyShaderModule(_device, vertShader, nullptr);
+    vkDestroyShaderModule(_device, fragShader, nullptr);
+    
+    std::vector<uint32_t> indices = {0,1,2,0,2,3};
+    
+    std::vector<VertexData> vertices;
+    VertexData newVtx;
+    vertices.push_back(newVtx);
+    planeMesh = uploadMesh(indices, vertices);
+    
 }
 
 void VulkanEngine::build_soft_body_pipeline(){
@@ -641,7 +711,7 @@ void VulkanEngine::init_imgui()
 }
 
 void VulkanEngine::init_default_data(){
-    meshPBD = new PBDMesh3D(this, 10.f, 50);
+    meshPBD = new PBDMesh3D(this, 10.f, 9);
     _mainDeletionQueue.push_function([=, this](){
         meshPBD->clear_resources();
     });
@@ -653,9 +723,10 @@ void VulkanEngine::init_default_data(){
         writer.update_set(_device, _softBodyDSet);
     }
     
-    uniformComputeData.acceleration = glm::vec3(0.f,.1f,0);
+    acceleration = glm::vec3(0,.1f, 0);
     
-    mainCamera.position = glm::vec3(0.f, 5.f, 0.f);
+    
+    mainCamera.position = glm::vec3(0.f, -5.f, 0.f);
     mainCamera.velocity = glm::vec3(0.f);
     mainCamera.window = _window;
 }
@@ -726,6 +797,7 @@ void VulkanEngine::update_scene(){
     sceneData.sunlightDirection = glm::vec4(dir, 1.0f);
     sceneData.time = timeElapsed;
     
+    uniformComputeData.acceleration = acceleration;
     uniformComputeData.timeStep = deltaT/timeStepScale; //scale timeStep as needed
 }
 
@@ -825,6 +897,11 @@ void VulkanEngine::draw()
         vkCmdDrawIndexed(cmd, 3, meshPBD->get_indices()/3, 0, 0, 0);
     }
     
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, planePLayout, 0, 1, &_globalDescriptor, 0, nullptr);
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, planePipeline);
+    vkCmdBindIndexBuffer(cmd, planeMesh.indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
+    vkCmdDrawIndexed(cmd, 6, 1, 0, 0, 0);
+    
     static PFN_vkVoidFunction pVkCmdEndRenderingKHR = vkGetDeviceProcAddr(_device, "vkCmdEndRenderingKHR");
     
     ((PFN_vkCmdEndRenderingKHR)(pVkCmdEndRenderingKHR))(cmd);
@@ -918,8 +995,10 @@ void VulkanEngine::run(){
             ImGui::Text("Toggle wireframe: X");
             ImGui::Text("Move camera: WASD");
             ImGui::Checkbox("Show Wireframe", &useEdgePipeline);
-            ImGui::SliderInt("Solver Iterations:", &solverIterations, 10, 30);
+            ImGui::SliderInt("Solver Iterations:", &solverIterations, 10, 50);
             ImGui::SliderFloat("TimeStep Scaler (Higher = shorter time step):", &timeStepScale, 0.1, 100);
+            ImGui::InputFloat3("Acceleration",(float*)& acceleration);
+            
         }
         ImGui::End();
         

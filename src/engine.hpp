@@ -98,6 +98,10 @@ public:
 
     VkDescriptorSetLayout _singleImageDescriptorLayout;
     
+    VkPipelineLayout planePLayout;
+    VkPipeline planePipeline;
+    GPUMeshBuffers planeMesh;
+    
     AllocatedBuffer instanceBuffer;
     VkDescriptorSetLayout _softBodyDSLayout;
     VkDescriptorSet _softBodyDSet;
@@ -140,6 +144,7 @@ public:
     PBDMesh* meshPBD;
     int solverIterations = 30;
     float timeStepScale = 1.f;
+    glm::vec3 acceleration;
     
     Camera mainCamera;
     
@@ -195,6 +200,7 @@ private:
     
     void build_compute_pipeline();
     void build_soft_body_pipeline();
+    void build_plane_pipeline();
     void prepare_graphics_rendering(VkCommandBuffer cmd);
 };
 

@@ -12,7 +12,7 @@ void PBDMesh::init_solver_pipelines(){
         fmt::print("Error when building the compute shader \n");
     }
     {
-        VkDescriptorSetLayout layouts[] = {uniformComputeDSLayout, computeSolveDSLayout};
+        VkDescriptorSetLayout layouts[] = {uniformComputeDSLayout, computePSolveDSLayout};
         VkPipelineLayoutCreateInfo computeLayout{};
         computeLayout.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
         computeLayout.pNext = nullptr;
@@ -51,17 +51,32 @@ void PBDMesh::init_solver_descriptor_sets(){
         builder.add_binding(1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
         builder.add_binding(2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
         builder.add_binding(3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
-        computeSolveDSLayout = builder.build(engine->_device, VK_SHADER_STAGE_COMPUTE_BIT);
+        computePSolveDSLayout = builder.build(engine->_device, VK_SHADER_STAGE_COMPUTE_BIT);
     }
     
-    computePreSolveDSet = engine->globalDescriptorAllocator.allocate(engine->_device, computeSolveDSLayout);
-    computePostSolveDSet = engine->globalDescriptorAllocator.allocate(engine->_device, computeSolveDSLayout);
+    computePreSolveDSet = engine->globalDescriptorAllocator.allocate(engine->_device, computePSolveDSLayout);
+    computePostSolveDSet = engine->globalDescriptorAllocator.allocate(engine->_device, computePSolveDSLayout);
     
     //uniform descriptor set for constraints solver
     {
         DescriptorLayoutBuilder builder;
         builder.add_binding(0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);
         uniformComputeDSLayout = builder.build(engine->_device, VK_SHADER_STAGE_ALL);
+    }
+    
+    {
+        DescriptorLayoutBuilder builder;
+        builder.add_binding(0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
+        builder.add_binding(1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
+        computeSolveDSLayout = builder.build(engine->_device, VK_SHADER_STAGE_ALL);
+    }
+    
+    computeSolveDSet = engine->globalDescriptorAllocator.allocate(engine->_device, computeSolveDSLayout);
+    {
+        DescriptorWriter writer;
+        writer.write_buffer(0, vertexIntermediateBuffer.buffer, sizeof(VertexData) * numVertices, 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
+        writer.write_buffer(1, correctionBuffer.buffer, sizeof(Correction) * numVertices, 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
+        writer.update_set(engine->_device, computeSolveDSet);
     }
     
 }
@@ -131,6 +146,7 @@ PBDMesh2D::PBDMesh2D(VulkanEngine *engine, float sideSize, int subdivisions){
 
 void PBDMesh2D::clear_resources(){
     vkDestroyDescriptorSetLayout(engine->_device, compute2DDSLayout, nullptr);
+    vkDestroyDescriptorSetLayout(engine->_device, computePSolveDSLayout, nullptr);
     vkDestroyDescriptorSetLayout(engine->_device, computeSolveDSLayout, nullptr);
     vkDestroyDescriptorSetLayout(engine->_device, uniformComputeDSLayout, nullptr);
     vkDestroyPipelineLayout(engine->_device, compute2DPLayout, nullptr);
@@ -325,13 +341,16 @@ void PBDMesh3D::init_mesh(float sideSize, int subdivisions){
     std::vector<uint32_t> indices;
     std::vector<VertexData> vertices;
     
-    if(subdivisions == 1){
-        subdivisions = 2;
+    if(subdivisions < 3){
+        subdivisions = 3;
+    }
+    if(subdivisions%2 == 0){
+        subdivisions+=1;
     }
     
     float displ = sideSize/(subdivisions-1);
     float halfSide = sideSize/2.f;
-    fmt::print("displ = {}, hSide = {}\n", displ, halfSide);
+    fmt::print("subdivisions = {}, displ = {}, hSide = {}\n", subdivisions, displ, halfSide);
     for(int i = 0; i < subdivisions; i++){
         for(int j = 0; j < subdivisions; j++){
             for(int k = 0; k < subdivisions; k++){
@@ -433,20 +452,23 @@ void PBDMesh3D::init_mesh(float sideSize, int subdivisions){
         }
     }
     
+    int volumeUnitSize = 1;
     coloringVConstraints.resize(10);
-    for(int i = 0; i < subdivisions/2 - 1; i ++){
+    
+    int numVolumeConstraints = 0;
+    for(int i = 0; i < subdivisions - volumeUnitSize; i += volumeUnitSize){
         int idx;
-        uint32_t i0 = i*2;
-        uint32_t i1 = i0 + 2;
-        for(int j = 0; j < subdivisions/2 - 1; j++){
-            uint32_t j0 = j*2;
-            uint32_t j1 = j0 + 2;
-            for(int k = 0; k < subdivisions/2 - 1; k++){
-                idx = (i+j+k)%2;
+        uint32_t i0 = i;
+        uint32_t i1 = i0 + volumeUnitSize;
+        for(int j = 0; j < subdivisions - volumeUnitSize; j += volumeUnitSize){
+            uint32_t j0 = j;
+            uint32_t j1 = j0 + volumeUnitSize;
+            for(int k = 0; k < subdivisions - volumeUnitSize; k += volumeUnitSize){
+                idx = ((i+j+k)/volumeUnitSize)%2;
                 idx*=5;
                 
-                uint32_t k0 = k*2;
-                uint32_t k1 = k0 + 2;
+                uint32_t k0 = k;
+                uint32_t k1 = k0 + volumeUnitSize;
                 
                 uint32_t v0 = ((i0 * subdivisions) + j0) * subdivisions + k0;
                 uint32_t v1 = ((i0 * subdivisions) + j0) * subdivisions + k1;
@@ -467,6 +489,7 @@ void PBDMesh3D::init_mesh(float sideSize, int subdivisions){
                                                     (vertices[vC.v3].pos - vertices[vC.v1].pos)),
                                          (vertices[vC.v4].pos - vertices[vC.v1].pos))/6 ;
                     coloringVConstraints[idx++].push_back(vC);
+                    numVolumeConstraints++;
                 }
                 {//V2
                     VolumeConstraint vC{};
@@ -478,6 +501,7 @@ void PBDMesh3D::init_mesh(float sideSize, int subdivisions){
                                                     (vertices[vC.v3].pos - vertices[vC.v1].pos)),
                                          (vertices[vC.v4].pos - vertices[vC.v1].pos))/6 ;
                     coloringVConstraints[idx++].push_back(vC);
+                    numVolumeConstraints++;
                 }
                 {//V3
                     VolumeConstraint vC{};
@@ -489,6 +513,7 @@ void PBDMesh3D::init_mesh(float sideSize, int subdivisions){
                                                     (vertices[vC.v3].pos - vertices[vC.v1].pos)),
                                          (vertices[vC.v4].pos - vertices[vC.v1].pos))/6 ;
                     coloringVConstraints[idx++].push_back(vC);
+                    numVolumeConstraints++;
                 }
                 {//V4
                     VolumeConstraint vC{};
@@ -500,6 +525,7 @@ void PBDMesh3D::init_mesh(float sideSize, int subdivisions){
                                                     (vertices[vC.v3].pos - vertices[vC.v1].pos)),
                                          (vertices[vC.v4].pos - vertices[vC.v1].pos))/6 ;
                     coloringVConstraints[idx++].push_back(vC);
+                    numVolumeConstraints++;
                 }
                 {//V5
                     VolumeConstraint vC{};
@@ -511,24 +537,37 @@ void PBDMesh3D::init_mesh(float sideSize, int subdivisions){
                                                     (vertices[vC.v3].pos - vertices[vC.v1].pos)),
                                          (vertices[vC.v4].pos - vertices[vC.v1].pos))/6 ;
                     coloringVConstraints[idx++].push_back(vC);
+                    numVolumeConstraints++;
                 
                 }
             }
         }
     }
     
+    int count = 0;
     float vTot = 0;
+    volumeIdxList.resize(numVolumeConstraints * 4);
     for(int coloring = 0; coloring < coloringVConstraints.size(); coloring++){
-        fmt::print("Volume constraints bucket {}, size: {}\n", coloring, coloringVConstraints[coloring].size());
-        for(int vC = 0; vC < coloringVConstraints[coloring].size(); vC++){
-            vConstraints.push_back(coloringVConstraints[coloring][vC]);
-            vTot += coloringVConstraints[coloring][vC].volume;
+        int bucketSize = coloringVConstraints[coloring].size();
+        for(int vC = 0; vC < bucketSize; vC++){
+            volumeIdxList[count*4 + vC] = coloringVConstraints[coloring][vC].v1;
+            volumeIdxList[count*4 + vC + bucketSize * 1] = coloringVConstraints[coloring][vC].v2;
+            volumeIdxList[count*4 + vC + bucketSize * 2] = coloringVConstraints[coloring][vC].v3;
+            volumeIdxList[count*4 + vC + bucketSize * 3] = coloringVConstraints[coloring][vC].v4;
+            volumeList.push_back(coloringVConstraints[coloring][vC].volume);
+            vTot+= coloringVConstraints[coloring][vC].volume;
+        }
+        count += bucketSize;
+        while(volumeList.size()%4!=0){
+            volumeList.push_back(0.f);
         }
     }
     
     fmt::print("Total constrained volume : {}, Total volume: {}\n", vTot, sideSize*sideSize*sideSize);
     
-    volumeConstraintsBuffer = engine->create_copy_buffer(vConstraints.size() * sizeof(VolumeConstraint), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VMA_MEMORY_USAGE_GPU_ONLY, vConstraints.data());
+    volumeValBuffer = engine->create_copy_buffer(volumeList.size() * sizeof(float), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VMA_MEMORY_USAGE_GPU_ONLY, volumeList.data());
+    
+    volumeIdxBuffer = engine->create_copy_buffer(volumeIdxList.size() * sizeof(uint32_t), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VMA_MEMORY_USAGE_GPU_ONLY, volumeIdxList.data());
     
     instanceBuffer = engine->create_copy_buffer(instances.size() * sizeof(InstanceData), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VMA_MEMORY_USAGE_GPU_ONLY, instances.data());
     
@@ -591,7 +630,7 @@ void PBDMesh3D::init_mesh(float sideSize, int subdivisions){
     for(int i = 0; i< numVertices; i++){
         VertexDynamics newVtxDyn;
         newVtxDyn.mass = 1.f;
-        newVtxDyn.velocity = glm::vec3(0, 0.01f, 0);
+        newVtxDyn.velocity = glm::vec3(0, 0., 0);
         vertexDynBuffer.push_back(newVtxDyn);//[i] = newVtxDyn;
     }
     
@@ -623,7 +662,7 @@ void PBDMesh3D::init_mesh(float sideSize, int subdivisions){
     
     loadedMesh = engine->uploadMesh(indices, vertices);
     
-    fmt::print("3D Mesh loaded, {} vertices, {} indices, {} edge constraints, {} volume constraints\n", numVertices, numIndices, constraints.size(), vConstraints.size());
+    fmt::print("3D Mesh loaded, {} vertices, {} indices, {} edge constraints, {} volume constraints\n", numVertices, numIndices, constraints.size(), volumeList.size());
 }
 
 void PBDMesh3D::init_pipelines(){
@@ -638,12 +677,27 @@ void IConstraint3D::create_volume_pipeline(VulkanEngine* engine){
         fmt::print("Error when building the compute shader \n");
     }
     
-    VkDescriptorSetLayout layouts[] = {compute3DDSLayout};
+    VkDescriptorSetLayout dsLayout, uboLayout;
+    
+    {
+        DescriptorLayoutBuilder builder;
+        builder.add_binding(0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
+        builder.add_binding(1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
+        dsLayout = builder.build(engine->_device, VK_SHADER_STAGE_ALL);
+    }
+    
+    {
+        DescriptorLayoutBuilder builder;
+        builder.add_binding(0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);
+        uboLayout = builder.build(engine->_device, VK_SHADER_STAGE_ALL);
+    }
+    
+    VkDescriptorSetLayout layouts[] = {compute3DDSLayout, dsLayout, uboLayout};
     VkPipelineLayoutCreateInfo computeLayout{};
     computeLayout.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
     computeLayout.pNext = nullptr;
     computeLayout.pSetLayouts = layouts;
-    computeLayout.setLayoutCount = 1;
+    computeLayout.setLayoutCount = 3;
     VK_CHECK(vkCreatePipelineLayout(engine->_device, &computeLayout, nullptr, &compute3DPLayout));
     
     VkPipelineShaderStageCreateInfo stageinfo{};
@@ -662,6 +716,8 @@ void IConstraint3D::create_volume_pipeline(VulkanEngine* engine){
     VK_CHECK(vkCreateComputePipelines(engine->_device, VK_NULL_HANDLE, 1, &computePipelineCreateInfo, nullptr, &compute3DPipeline));
     
     vkDestroyShaderModule(engine->_device, compConstraintsShader, nullptr);
+    vkDestroyDescriptorSetLayout(engine->_device, dsLayout, nullptr);
+    vkDestroyDescriptorSetLayout(engine->_device, uboLayout, nullptr);
 }
 
 void IConstraint3D::create_volume_descriptor_sets(VulkanEngine* engine){
@@ -669,7 +725,6 @@ void IConstraint3D::create_volume_descriptor_sets(VulkanEngine* engine){
         DescriptorLayoutBuilder builder;
         builder.add_binding(0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
         builder.add_binding(1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
-        builder.add_binding(2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
         compute3DDSLayout = builder.build(engine->_device, VK_SHADER_STAGE_COMPUTE_BIT);
     }
     
@@ -683,7 +738,7 @@ void PBDMesh3D::init_descriptors()
     create_volume_descriptor_sets(engine);
     create_edge_descriptor_sets(engine);
     init_solver_descriptor_sets();
-    
+        
     int offset = 0;
     for (int i = 0; i < coloringConstraints.size(); i++)
     {
@@ -698,10 +753,9 @@ void PBDMesh3D::init_descriptors()
     for (int i = 0; i < coloringVConstraints.size(); i++)
     {
         DescriptorWriter writer;
-        writer.write_buffer(0, volumeConstraintsBuffer.buffer, sizeof(VolumeConstraint) * coloringVConstraints[i].size(), offset, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
-        offset += sizeof(VolumeConstraint) * coloringVConstraints[i].size();
-        writer.write_buffer(1, vertexIntermediateBuffer.buffer, sizeof(VertexData) * numVertices, 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
-        writer.write_buffer(2, correctionBuffer.buffer, sizeof(Correction) * numVertices, 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
+        writer.write_buffer(0, volumeValBuffer.buffer, sizeof(float) * coloringVConstraints[i].size(), ceil(offset/4)*4, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
+        writer.write_buffer(1, volumeIdxBuffer.buffer, sizeof(uint32_t) * coloringVConstraints[i].size() * 4, offset * 4, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
+        offset += sizeof(float) * coloringVConstraints[i].size();
         writer.update_set(engine->_device, compute3DConstraintsDSet[i]);
     }
     {
@@ -732,7 +786,7 @@ void PBDMesh3D::solve_constraints(VkCommandBuffer cmd, VkDescriptorSet uniformSc
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, computeSolvePLayout, 0, 2, descriptorSets, 0, nullptr);
         vkCmdDispatch(cmd, std::ceil(numVertices / 32.0), 1, 1);
         
-        solve_volume_constraints(cmd);
+        solve_volume_constraints(cmd, computeSolveDSet, uniformSceneDSet);
         solve_edge_constraints(cmd);
         
         //PostSolve
@@ -743,14 +797,16 @@ void PBDMesh3D::solve_constraints(VkCommandBuffer cmd, VkDescriptorSet uniformSc
     }
 }
 
-void IConstraint3D::solve_volume_constraints(VkCommandBuffer cmd){
+void IConstraint3D::solve_volume_constraints(VkCommandBuffer cmd, VkDescriptorSet computeDSet, VkDescriptorSet uniformDSet){
     //Solve
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, compute3DPipeline);
     for(int c = 0; c<coloringVConstraints.size(); c++){
-        VkDescriptorSet dSet = compute3DConstraintsDSet[c];
-        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, compute3DPLayout, 0, 1, &dSet, 0, nullptr);
+        VkDescriptorSet sets[] = {compute3DConstraintsDSet[c], computeDSet, uniformDSet};
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, compute3DPLayout, 0, 3, sets, 0, nullptr);
         vkCmdDispatch(cmd, std::ceil(coloringVConstraints[c].size() / 32.0), 1, 1);
     }
+    
+    
 }
 
 PBDMesh3D::PBDMesh3D(VulkanEngine *engine, float sideSize, int subdivisions){
@@ -763,6 +819,7 @@ PBDMesh3D::PBDMesh3D(VulkanEngine *engine, float sideSize, int subdivisions){
 void PBDMesh3D::clear_resources(){
     vkDestroyDescriptorSetLayout(engine->_device, compute2DDSLayout, nullptr);
     vkDestroyDescriptorSetLayout(engine->_device, compute3DDSLayout, nullptr);
+    vkDestroyDescriptorSetLayout(engine->_device, computePSolveDSLayout, nullptr);
     vkDestroyDescriptorSetLayout(engine->_device, computeSolveDSLayout, nullptr);
     vkDestroyDescriptorSetLayout(engine->_device, uniformComputeDSLayout, nullptr);
     vkDestroyPipelineLayout(engine->_device, compute2DPLayout, nullptr);
