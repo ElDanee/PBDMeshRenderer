@@ -41,18 +41,9 @@ struct AllocatedBuffer {
     VmaAllocationInfo info;
 };
 
-struct Vertex {
-
-    alignas(16) glm::vec3 position;
-    float uv_x;
-    alignas(16) glm::vec3 normal;
-    float uv_y;
-    glm::vec4 color;
-};
-
 struct VertPushConstants{
-    glm::mat4 pad;
-    VkDeviceAddress vertexBuffer;
+    glm::mat4 pad; //Model Matrix if needed
+    VkDeviceAddress vertexBuffer; //Used for vertex pulling
 };
 
 struct GPUSceneData {
@@ -87,12 +78,12 @@ struct GPUMeshBuffers {
 
 struct VertexData{
     glm::vec3 pos;
-    float pad; //uint32_t pad;
+    float pad; //memory alignment, hold invMass if needed
 };
 
 struct VertexDynamics{
     glm::vec3 velocity;
-    float mass;
+    float invMass;
 };
 
 struct Correction{
@@ -104,7 +95,7 @@ struct EdgeConstraint{
     float length;
     uint32_t v1;
     uint32_t v2;
-    float elasticity; // 0 < e <= 1
+    float elasticity;
 };
 
 struct VolumeConstraint{
@@ -112,7 +103,7 @@ struct VolumeConstraint{
     uint32_t v2;
     uint32_t v3;
     uint32_t v4;
-    glm::vec3 areas; //Also, padding
+    glm::vec3 areas; //Also, padding for memory alignment
     float volume;
 };
 

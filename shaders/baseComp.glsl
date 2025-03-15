@@ -6,69 +6,74 @@
 #extension GL_EXT_nonuniform_qualifier : require
 #extension GL_EXT_shader_atomic_float : require
 
+#include "types.glsl"
+
 //size of a workgroup for compute
 layout (local_size_x = 32) in;
 
-struct EdgeConstraint{
-    float l;
-    uint v1;
-    uint v2;
-    float elasticity; // 0 < e <= 1
-};
+layout(set = 0, binding = 0) readonly buffer ConstraintsVal{
+    float distances[];
+} constraintsVal;
 
-layout(set = 0, binding = 0) readonly buffer Constraints{
-    EdgeConstraint edges[];
-} constraints;
+layout(set = 0, binding = 1) readonly buffer ConstraintsIdx{
+    uint indices[];
+} constraintsIdx;
 
-struct VertexData{
-    vec3 pos;
-    float mass;
-};
-
-layout(set = 0, binding = 1) buffer Vertices{
+layout(set = 1, binding = 0) buffer Vertices{
     VertexData pos[];
 } vertices;
 
-struct corrStruct{
-    vec3 dP;
-    float pad;
-};
+layout(set = 1, binding = 1) buffer Velocities{
+    VertexDynamics vel[];
+} velocities;
 
-layout(set = 0, binding = 2) buffer Corrections{
+layout(set = 1, binding = 2) buffer Corrections{
     corrStruct data[];
 } corrections;
 
+layout(set = 2, binding = 0) uniform UniformSceneData{
+    vec3 acceleration;
+    float timeStep;
+} uData;
+
 void main(){
-    int texelCoord = int(gl_GlobalInvocationID.x);
     
-    if (texelCoord < constraints.edges.length()){
-        EdgeConstraint edConst = constraints.edges[texelCoord];
-        VertexData v1 = vertices.pos[edConst.v1];
-        VertexData v2 = vertices.pos[edConst.v2];
+    int texelCoord = int(gl_GlobalInvocationID.x);
+    uint stride = constraintsVal.distances.length();
+    
+    if (texelCoord < stride){
+        //EdgeConstraint edConst = constraints.edges[texelCoord];
+        VertexData v1 = vertices.pos[constraintsIdx.indices[texelCoord]];
+        VertexData v2 = vertices.pos[constraintsIdx.indices[texelCoord + stride]];
         
         vec3 d = v1.pos - v2.pos;
         float l = length(d);
         vec3 n = normalize(d);
         
-        float w1 = 1/v1.mass;
-        float w2 = 1/v2.mass;
+        float dP = -(l - constraintsVal.distances[texelCoord]);
+        if(abs(dP)<pow(10,-6)) return;
         
-        vec3 dP = n * (l - edConst.l) / (w1 + w2);
+        float w1 = v1.invMass;
+        float w2 = v2.invMass;
         
-        corrections.data[edConst.v1].dP -= dP * w1;
-        corrections.data[edConst.v1].pad += 1;
-        corrections.data[edConst.v2].dP += dP * w2;
-        corrections.data[edConst.v2].pad += 1;
+        float alfa = (pow(10, -10)/uData.timeStep)/uData.timeStep;//(edConst.elasticity/uData.timeStep)/uData.timeStep/1000;
+        float beta = pow(10, 1) * uData.timeStep * uData.timeStep;
+        float gamma = alfa * beta;
         
-        //vertices.pos[edConst.v1].pos += dP;
-        //vertices.pos[edConst.v2].pos -= dP;
+        float K = (w1 + w2);
+        K*= 1+ (gamma/uData.timeStep);
+        K += alfa;
         
-        /*
-        atomicAdd(vertices.pos[edConst.v1].pos, dP);
-        atomicAdd(corrections.data[edConst.v1].dP.y, dP.y);
-        atomicAdd(corrections.data[edConst.v1].dP.z, dP.z);
-        atomicAdd(corrections.data[edConst.v2].dP.x, dP.x);
-        atomicAdd(corrections.data[edConst.v2].dP.y, dP.y);
-        atomicAdd(corrections.data[edConst.v2].dP.z, dP.z);*/
+        if(K <= pow(10,-6)) return;
+        
+        vertices.pos[constraintsIdx.indices[texelCoord]].pos +=
+            (dP - gamma * dot(n, velocities.vel[constraintsIdx.indices[texelCoord]].velocity)) * n/K *w1;
+        
+        vertices.pos[constraintsIdx.indices[texelCoord + stride]].pos +=
+            (dP - gamma * dot(-n, velocities.vel[constraintsIdx.indices[texelCoord + stride]].velocity)) * -n/K *w2;
+        
+        //Undampened
+        //vertices.pos[constraintsIdx.indices[texelCoord + stride]].pos += dP * n * w1;
+        //vertices.pos[constraintsIdx.indices[texelCoord + stride]].pos += -dP * n * w2;
     }
 }

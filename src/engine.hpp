@@ -8,6 +8,7 @@
 #include "camera.hpp"
 #include "mesh.hpp"
 
+
 struct DeletionQueue
 {
     std::deque<std::function<void()>> deletors;
@@ -98,6 +99,10 @@ public:
 
     VkDescriptorSetLayout _singleImageDescriptorLayout;
     
+    VkPipelineLayout planePLayout;
+    VkPipeline planePipeline;
+    GPUMeshBuffers planeMesh;
+    
     AllocatedBuffer instanceBuffer;
     VkDescriptorSetLayout _softBodyDSLayout;
     VkDescriptorSet _softBodyDSet;
@@ -138,14 +143,30 @@ public:
     VkDescriptorSet computePostSolveDSet;
     
     PBDMesh* meshPBD;
-    int solverIterations = 30;
+    int solverIterations = 20;
     float timeStepScale = 1.f;
+    glm::vec3 acceleration;
+    bool solveGPU = true;
+    bool snapshotSection = false;
+    bool showEdges = true;
+    bool freeCamera = false;
+    bool recordFPS = false;
+    bool recordStretch = false;
+    bool recordVolume = false;
+    bool squash = false;
+    
+    bool use3D;
+    
+    int numSubdivisions = 10;
+    
+    std::ofstream outputCSV;
     
     Camera mainCamera;
     
     static VulkanEngine& Get();
 
     //initializes everything in the engine
+    void init(int subdivisions, int startingIterations, bool use3D);
     void init();
 
     //shuts down the engine
@@ -169,6 +190,8 @@ public:
     
     AllocatedBuffer create_buffer(size_t allocSize, VkBufferUsageFlags usage, VmaMemoryUsage memoryUsage);
 
+    void copy_buffer(size_t allocSize, VkBufferUsageFlags usage, VmaMemoryUsage memoryUsage, void *dataSrc, AllocatedBuffer dstBuffer);
+    void copy_buffer_from_device(size_t dataSize, void *dataDst, AllocatedBuffer srcBuffer);
     AllocatedBuffer create_copy_buffer(size_t allocSize, VkBufferUsageFlags usage, VmaMemoryUsage memoryUsage, void *dataSrc);
     AllocatedImage create_image(VkExtent3D size, VkFormat format, VkImageUsageFlags usage, bool mipmapped = false);
     AllocatedImage create_image(void* data, VkExtent3D size, VkFormat format, VkImageUsageFlags usage, bool mipmapped = false);
@@ -195,6 +218,7 @@ private:
     
     void build_compute_pipeline();
     void build_soft_body_pipeline();
+    void build_plane_pipeline();
     void prepare_graphics_rendering(VkCommandBuffer cmd);
 };
 
