@@ -320,3 +320,18 @@ VkPipelineShaderStageCreateInfo vkinit::pipeline_shader_stage_create_info(VkShad
     info.pName = entry;
     return info;
 }
+
+VkBufferMemoryBarrier vkinit::buffer_barrier(VkBuffer buffer, uint32_t queue)
+{
+    VkBufferMemoryBarrier barrier{};
+    barrier.buffer = buffer;
+    barrier.size = VK_WHOLE_SIZE;
+    //barrier2.dstAccessMask = VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
+    //barrier2.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+    barrier.srcQueueFamilyIndex = queue;
+    barrier.dstQueueFamilyIndex = queue;
+    barrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+    barrier.pNext = nullptr;
+
+    return barrier;
+}

@@ -21,7 +21,7 @@ layout(set = 0, binding = 0) uniform SceneData{
 
 void main()
 {
-    vec3 ambient = vec3(0.f);
+    vec3 ambient = vec3(0.1f);
     vec3 color = inColor * max(dot(inNormal, sceneData.sunlightDirection.xyz), 0.5f);
-    outFragColor = vec4(color + ambient, 1.0f);
+    outFragColor = vec4(0.9*color + ambient, 1.0f);
 }

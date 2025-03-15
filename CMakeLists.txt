@@ -45,15 +45,15 @@ FetchContent_Declare(
   GIT_TAG        e69e5f977d458f2650bb346dadf2ad30c5320281
 )
 
-# 0.5.3 FastGltf
-FetchContent_Declare(
-        fastgltf
-        GIT_REPOSITORY https://github.com/spnda/fastgltf
-        GIT_TAG f434a94b47697a36f63f694b3e0ce4cdffa33d3b
-)
+# 0.5.3 FastGltf 
+# FetchContent_Declare(
+        # fastgltf
+        # GIT_REPOSITORY https://github.com/spnda/fastgltf
+        # GIT_TAG f434a94b47697a36f63f694b3e0ce4cdffa33d3b
+# )
 
 
-FetchContent_MakeAvailable(fetch_vk_bootstrap fetch_vma fmt fastgltf)
+FetchContent_MakeAvailable(fetch_vk_bootstrap fetch_vma fmt) # fastgltf)
 
 # 1. Set VULKAN_SDK_PATH in .env.cmake to target specific vulkan version
 if (DEFINED VULKAN_SDK_PATH)
@@ -121,7 +121,7 @@ target_link_libraries(${PROJECT_NAME} vk-bootstrap::vk-bootstrap)
 target_link_libraries(${PROJECT_NAME} GPUOpen::VulkanMemoryAllocator)
 target_link_libraries(${PROJECT_NAME} fmt::fmt)
 target_link_libraries(${PROJECT_NAME} glfw)
-target_link_libraries(${PROJECT_NAME} fastgltf::fastgltf)
+#target_link_libraries(${PROJECT_NAME} fastgltf::fastgltf)
 
 target_compile_definitions(${PROJECT_NAME} PUBLIC GLM_FORCE_DEPTH_ZERO_TO_ONE FASTGLTF_COMPILE_AS_CPP20=1)
 ############## Build SHADERS #######################

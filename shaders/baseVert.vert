@@ -69,4 +69,5 @@ void main()
                                 )));
     
     outColor = vec3(1.f, 0.4, 0.1);
+    outColor = vec3(v.pad, 0, 0.1);
 }

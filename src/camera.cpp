@@ -58,9 +58,8 @@ glm::mat4 Camera::getViewMatrix()
 
 glm::mat4 Camera::getRotationMatrix()
 {
-    // fairly typical FPS style camera. we join the pitch and yaw rotations into
-    // the final rotation matrix
-
+    // FPS style camera.
+    // join the pitch and yaw rotations into the final rotation matrix
     glm::quat pitchRotation = glm::angleAxis(pitch, glm::vec3 { 1.f, 0.f, 0.f });
     glm::quat yawRotation = glm::angleAxis(yaw, glm::vec3 { 0.f, -1.f, 0.f });
 

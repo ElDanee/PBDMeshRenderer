@@ -42,6 +42,13 @@ void key_callback(GLFWwindow* window, int key, int scancode, int action, int mod
     }
 }
 
+void VulkanEngine::init(int subdivisions, int startingIterations, bool use3D){
+    numSubdivisions = subdivisions;
+    solverIterations = startingIterations;
+    this->use3D = use3D;
+    init();
+}
+
 void VulkanEngine::init(){
     // only one engine initialization is allowed with the application.
     assert(loadedEngine == nullptr);
@@ -66,6 +73,12 @@ void VulkanEngine::init(){
     init_pipelines();
     init_imgui();
     init_default_data();
+    
+    outputCSV.open("../sampleFPSIter.csv");
+    if(!outputCSV.is_open()){
+        fmt::print("Failed to open file!");
+        exit(1);
+    } else outputCSV << "Timestamp;Iterations;FPS\n";
     
     //everything went fine
     _isInitialized = true;
@@ -183,7 +196,7 @@ void VulkanEngine::create_swapchain(uint32_t width, uint32_t height)
         //.use_default_format_selection()
         .set_desired_format(VkSurfaceFormatKHR{ .format = _swapchainImageFormat, .colorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR }) //Normal
         //use vsync present mode
-        .set_desired_present_mode(VK_PRESENT_MODE_FIFO_KHR)
+        .set_desired_present_mode(VK_PRESENT_MODE_IMMEDIATE_KHR)
         .set_desired_extent(width, height)
         .add_image_usage_flags(VK_IMAGE_USAGE_TRANSFER_DST_BIT)
         .build()
@@ -231,7 +244,6 @@ void VulkanEngine::destroy_swapchain()
 
     // destroy swapchain resources
     for (int i = 0; i < _swapchainImageViews.size(); i++) {
-
         vkDestroyImageView(_device, _swapchainImageViews[i], nullptr);
     }
 }
@@ -318,30 +330,6 @@ void VulkanEngine::init_descriptors()
     }
     _softBodyDSet = globalDescriptorAllocator.allocate(_device, _softBodyDSLayout);
     
-    {
-        DescriptorLayoutBuilder builder;
-        builder.add_binding(0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
-        builder.add_binding(1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
-        builder.add_binding(2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
-        computeDSLayout = builder.build(_device, VK_SHADER_STAGE_COMPUTE_BIT);
-    }
-    
-    computeConstraintsDSet.resize(6);
-    for(int i = 0; i<computeConstraintsDSet.size(); i++)
-        computeConstraintsDSet[i] = globalDescriptorAllocator.allocate(_device, computeDSLayout);
-    
-    {
-        DescriptorLayoutBuilder builder;
-        builder.add_binding(0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
-        builder.add_binding(1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
-        builder.add_binding(2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
-        builder.add_binding(3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
-        computePostSolveDSLayout = builder.build(_device, VK_SHADER_STAGE_COMPUTE_BIT);
-    }
-    
-    computePreSolveDSet = globalDescriptorAllocator.allocate(_device, computePostSolveDSLayout);
-    computePostSolveDSet = globalDescriptorAllocator.allocate(_device, computePostSolveDSLayout);
-    
     
     //both the descriptor allocator and the new layout get cleaned up properly
     _mainDeletionQueue.push_function([&]() {
@@ -349,8 +337,6 @@ void VulkanEngine::init_descriptors()
         vkDestroyDescriptorSetLayout(_device, _gpuSceneDataDescriptorLayout, nullptr);
         vkDestroyDescriptorSetLayout(_device, _uniformComputeDSLayout, nullptr); 
         vkDestroyDescriptorSetLayout(_device, _softBodyDSLayout, nullptr);
-        vkDestroyDescriptorSetLayout(_device, computeDSLayout, nullptr);
-        vkDestroyDescriptorSetLayout(_device, computePostSolveDSLayout, nullptr);
         
     });
     
@@ -388,7 +374,6 @@ void VulkanEngine::init_data_buffers(){
 void VulkanEngine::init_pipelines()
 {
     build_soft_body_pipeline();
-    //build_compute_pipeline();
     build_plane_pipeline();
 }
 
@@ -467,13 +452,13 @@ void VulkanEngine::build_soft_body_pipeline(){
     VkShaderModule fragShader;
     { //Load shader modules
         if (!vkutil::load_shader_module("../shaders/base.vert.spv", _device, &vertShader)) {
-            fmt::println("Error when building the triangle mesh shader module");
+            fmt::println("Error when building the triangle mesh vertex shader module");
         }
         if (!vkutil::load_shader_module("../shaders/baseWire.vert.spv", _device, &vertWireShader)) {
-            fmt::println("Error when building the triangle mesh shader module");
+            fmt::println("Error when building the triangle wire vertex shader module");
         }
         if (!vkutil::load_shader_module("../shaders/base.frag.spv", _device, &fragShader)) {
-            fmt::println("Error when building the triangle fragment shader module");
+            fmt::println("Error when building the triangle mesh fragment shader module");
         }
     }
     
@@ -571,85 +556,6 @@ void VulkanEngine::build_soft_body_pipeline(){
     vkDestroyShaderModule(_device, fragShader, nullptr);
 }
 
-void VulkanEngine::build_compute_pipeline(){
-    VkShaderModule compConstraintsShader;
-    if (!vkutil::load_shader_module("../shaders/constraints.comp.spv", _device, &compConstraintsShader)) {
-        fmt::print("Error when building the compute shader \n");
-    }
-    VkShaderModule compPreSolveShader;
-    if (!vkutil::load_shader_module("../shaders/preSolve.comp.spv", _device, &compPreSolveShader)) {
-        fmt::print("Error when building the compute shader \n");
-    }
-    VkShaderModule compPostSolveShader;
-    if (!vkutil::load_shader_module("../shaders/postSolve.comp.spv", _device, &compPostSolveShader)) {
-        fmt::print("Error when building the compute shader \n");
-    }
-    {
-        VkDescriptorSetLayout layouts[] = {_uniformComputeDSLayout, computeDSLayout};
-        VkPipelineLayoutCreateInfo computeLayout{};
-        computeLayout.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-        computeLayout.pNext = nullptr;
-        computeLayout.pSetLayouts = layouts;
-        computeLayout.setLayoutCount = 2;
-        VK_CHECK(vkCreatePipelineLayout(_device, &computeLayout, nullptr, &computePLayout));
-        
-        VkPipelineShaderStageCreateInfo stageinfo{};
-        stageinfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-        stageinfo.pNext = nullptr;
-        stageinfo.stage = VK_SHADER_STAGE_COMPUTE_BIT;
-        stageinfo.module = compConstraintsShader;
-        stageinfo.pName = "main";
-
-        VkComputePipelineCreateInfo computePipelineCreateInfo{};
-        computePipelineCreateInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
-        computePipelineCreateInfo.pNext = nullptr;
-        computePipelineCreateInfo.layout = computePLayout;
-        computePipelineCreateInfo.stage = stageinfo;
-
-        VK_CHECK(vkCreateComputePipelines(_device, VK_NULL_HANDLE, 1, &computePipelineCreateInfo, nullptr, &computeConstraintsPipeline));
-    }
-    {
-        VkDescriptorSetLayout layouts[] = {_uniformComputeDSLayout, computePostSolveDSLayout};
-        VkPipelineLayoutCreateInfo computeLayout{};
-        computeLayout.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-        computeLayout.pNext = nullptr;
-        computeLayout.pSetLayouts = layouts;
-        computeLayout.setLayoutCount = 2;
-
-        VK_CHECK(vkCreatePipelineLayout(_device, &computeLayout, nullptr, &computePostSolvePLayout));
-        
-        VkPipelineShaderStageCreateInfo stageinfo{};
-        stageinfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-        stageinfo.pNext = nullptr;
-        stageinfo.stage = VK_SHADER_STAGE_COMPUTE_BIT;
-        stageinfo.module = compPostSolveShader;
-        stageinfo.pName = "main";
-
-        VkComputePipelineCreateInfo computePipelineCreateInfo{};
-        computePipelineCreateInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
-        computePipelineCreateInfo.pNext = nullptr;
-        computePipelineCreateInfo.layout = computePostSolvePLayout;
-        computePipelineCreateInfo.stage = stageinfo;
-
-        VK_CHECK(vkCreateComputePipelines(_device, VK_NULL_HANDLE, 1, &computePipelineCreateInfo, nullptr, &computePostSolvePipeline));
-        
-        computePipelineCreateInfo.stage.module = compPreSolveShader;
-        VK_CHECK(vkCreateComputePipelines(_device, VK_NULL_HANDLE, 1, &computePipelineCreateInfo, nullptr, &computePreSolvePipeline));
-    }
-    
-    vkDestroyShaderModule(_device, compConstraintsShader, nullptr);
-    vkDestroyShaderModule(_device, compPreSolveShader, nullptr);
-    vkDestroyShaderModule(_device, compPostSolveShader, nullptr);
-    _mainDeletionQueue.push_function([=, this]() {
-        vkDestroyPipelineLayout(_device, computePLayout, nullptr);
-        vkDestroyPipeline(_device, computeConstraintsPipeline, nullptr);
-        vkDestroyPipeline(_device, computePreSolvePipeline, nullptr);
-        vkDestroyPipelineLayout(_device, computePostSolvePLayout, nullptr);
-        vkDestroyPipeline(_device, computePostSolvePipeline, nullptr);
-        
-    });
-}
-
 void VulkanEngine::init_imgui()
 {
     // 1: create descriptor pool for IMGUI
@@ -711,7 +617,10 @@ void VulkanEngine::init_imgui()
 }
 
 void VulkanEngine::init_default_data(){
-    meshPBD = new PBDMesh3D(this, 10.f, 9);
+    if(use3D)
+        meshPBD = new PBDMesh3D(this, 8.f, numSubdivisions);
+    else
+        meshPBD = new PBDMesh2D(this, 8.f, numSubdivisions);
     _mainDeletionQueue.push_function([=, this](){
         meshPBD->clear_resources();
     });
@@ -723,10 +632,10 @@ void VulkanEngine::init_default_data(){
         writer.update_set(_device, _softBodyDSet);
     }
     
-    acceleration = glm::vec3(0,.1f, 0);
+    acceleration = glm::vec3(0, 0, 0);
     
     
-    mainCamera.position = glm::vec3(0.f, -5.f, 0.f);
+    mainCamera.position = glm::vec3(-19,-10,-14);
     mainCamera.velocity = glm::vec3(0.f);
     mainCamera.window = _window;
 }
@@ -768,7 +677,7 @@ void VulkanEngine::update_scene(){
     
     
     auto currentTime = std::chrono::high_resolution_clock::now();
-    float time = std::chrono::duration<float, std::chrono::seconds::period>
+    float time = std::chrono::duration<float, std::chrono::milliseconds::period>
                 (currentTime - startTime).count();
     float deltaT = time - lastTime;
     timeElapsed+= deltaT;
@@ -777,7 +686,9 @@ void VulkanEngine::update_scene(){
     glm::mat4 view;
     
     mainCamera.update();
-    view = mainCamera.getViewMatrix();
+    if(freeCamera)
+        view = mainCamera.getViewMatrix();
+    else view = mainCamera.getLookAtMatrix(meshPBD->get_vertex_zero(), glm::vec3(0,-1,0));
     sceneData.eyePosition = glm::vec4(mainCamera.position, 1.0f);
     
     // camera projection
@@ -798,11 +709,12 @@ void VulkanEngine::update_scene(){
     sceneData.time = timeElapsed;
     
     uniformComputeData.acceleration = acceleration;
-    uniformComputeData.timeStep = deltaT/timeStepScale; //scale timeStep as needed
+    uniformComputeData.timeStep = 1.f/60;
 }
 
 void VulkanEngine::solve_constraints(VkCommandBuffer cmd){
     const int nSteps = solverIterations;
+    static bool GPU = true;
     uniformComputeData.timeStep /= nSteps;
     
     ComputeSceneUniformData* sceneUniformData = (ComputeSceneUniformData*)get_current_frame()._computeSceneDataBuffer.allocation->GetMappedData();
@@ -813,7 +725,14 @@ void VulkanEngine::solve_constraints(VkCommandBuffer cmd){
     writer.write_buffer(0, get_current_frame()._computeSceneDataBuffer.buffer, sizeof(ComputeSceneUniformData), 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);
     writer.update_set(_device, _uniformComputeDSet);
     
-    meshPBD->solve_constraints(cmd, _uniformComputeDSet, nSteps);
+    if(solveGPU || !(use3D)) //Not implemented yet for 2D
+        meshPBD->solve_constraints(cmd, _uniformComputeDSet, nSteps);
+    else
+        meshPBD->solve_constraints_sequential(nSteps, uniformComputeData.timeStep, uniformComputeData.acceleration);
+    if(GPU != solveGPU){
+        GPU = solveGPU;
+        meshPBD->log_data("0;0;0;0;0;0;0");
+    }
 }
 
 void VulkanEngine::draw()
@@ -824,7 +743,7 @@ void VulkanEngine::draw()
     PFN_vkVoidFunction pVkCmdBlitImage2KHR = vkGetDeviceProcAddr(_device, "vkCmdBlitImage2KHR");
     
     // wait until the gpu has finished rendering the last frame. Timeout of 1 second
-    VK_CHECK(vkWaitForFences(_device, 1, &get_current_frame()._renderFence, true, 1000000000));
+    VK_CHECK(vkWaitForFences(_device, 1, &get_current_frame()._renderFence, true, 1000000000000));
 
     get_current_frame()._deletionQueue.flush();
     get_current_frame()._frameDescriptors.clear_pools(_device);
@@ -835,7 +754,7 @@ void VulkanEngine::draw()
     
     //request image from the swapchain
     uint32_t swapchainImageIndex;
-    VkResult e = vkAcquireNextImageKHR(_device, _swapchain, 1000000000, get_current_frame()._swapchainSemaphore, nullptr, &swapchainImageIndex);
+    VkResult e = vkAcquireNextImageKHR(_device, _swapchain, 1000000000000, get_current_frame()._swapchainSemaphore, nullptr, &swapchainImageIndex);
     if (e == VK_ERROR_OUT_OF_DATE_KHR) {
         resize_requested = true;
         return ;
@@ -858,6 +777,7 @@ void VulkanEngine::draw()
     
     VK_CHECK(vkBeginCommandBuffer(cmd, &cmdBeginInfo));
     
+    //Solve constraints XPBD
     solve_constraints(cmd);
 
     vkutil::transition_image(cmd, _drawImage.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, pVkCmdPipelineBarrier2KHR);
@@ -876,6 +796,7 @@ void VulkanEngine::draw()
                      
     prepare_graphics_rendering(cmd);
     
+    //Rendering
     VertPushConstants pushC;
     pushC.vertexBuffer = meshPBD->get_loaded_mesh().vertexBufferAddress;
     vkCmdPushConstants(cmd, _softBodyPLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(VertPushConstants), &pushC);
@@ -883,9 +804,11 @@ void VulkanEngine::draw()
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, _softBodyPLayout, 0, 2, descriptors, 0, nullptr);
     
     if(useEdgePipeline){
-        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, _softBodyEdgePipeline);
-        vkCmdBindIndexBuffer(cmd, meshPBD->get_loaded_mesh().indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
-        vkCmdDrawIndexed(cmd, 3, meshPBD->get_indices()/3, 0, 0, 0);
+        if(showEdges){
+            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, _softBodyEdgePipeline);
+            vkCmdBindIndexBuffer(cmd, meshPBD->get_loaded_mesh().indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
+            vkCmdDrawIndexed(cmd, 3, meshPBD->get_indices()/3, 0, 0, 0);
+        }
         
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, _softBodyPointPipeline);
         vkCmdDraw(cmd, meshPBD->get_vertices(), 1, 0, 0);
@@ -991,20 +914,106 @@ void VulkanEngine::run(){
         
         if (ImGui::Begin("Settings")) {
             ImGui::Text("FPS : %f", ImGui::GetIO().Framerate);
+            ImGui::Checkbox("Show Wireframe", &useEdgePipeline);
+            ImGui::Checkbox("Show Edges", &showEdges);
+            ImGui::SliderInt("Solver Iterations:", &solverIterations, 1, 50);
+            ImGui::SliderFloat("TimeStep Scaler (Higher = shorter time step):", &timeStepScale, 0.1, 100);
+            ImGui::Checkbox("Solve with GPU", &solveGPU);
+            ImGui::InputFloat3("Acceleration",(float*)& acceleration);
+            ImGui::Checkbox("Snapshot section", &snapshotSection);
+            ImGui::Checkbox("Record stretch", &recordStretch);
+            ImGui::Checkbox("Record volume", &recordVolume);
+            ImGui::Checkbox("Squash Mesh", &squash);
+            ImGui::Checkbox("Record FPS", &recordFPS);
+            ImGui::Checkbox("Free camera", &freeCamera);
             ImGui::Text("Lock camera: C");
             ImGui::Text("Toggle wireframe: X");
             ImGui::Text("Move camera: WASD");
-            ImGui::Checkbox("Show Wireframe", &useEdgePipeline);
-            ImGui::SliderInt("Solver Iterations:", &solverIterations, 10, 50);
-            ImGui::SliderFloat("TimeStep Scaler (Higher = shorter time step):", &timeStepScale, 0.1, 100);
-            ImGui::InputFloat3("Acceleration",(float*)& acceleration);
-            
+
         }
         ImGui::End();
         
+        static bool squashed = false;
+        if(use3D){ //Not implemented yet for 2D
+            if(squash){
+                acceleration = glm::vec3(0,100000,0);
+                squashed = true;
+            }
+        }
+        //Main draw loop
         ImGui::Render();
         //draw function
         draw();
+        
+        //Logging section
+        if(use3D){ //Not implemented yet for 2D
+            if(!squash && squashed){
+                acceleration = glm::vec3(0);
+                squashed = false;
+            }
+            static float FPS = 0;
+            static int frameToQuit = 1000;
+            if (recordFPS) {
+                FPS += ImGui::GetIO().Framerate;
+                
+                outputCSV << 1000 - frameToQuit << ";" << solverIterations << ";" << ImGui::GetIO().Framerate <<"\n";
+                frameToQuit--;
+            }
+            
+            if(snapshotSection){
+                
+                meshPBD->copy_from_device();
+                //if(frame % 50 == 0)
+                    meshPBD -> log_section();
+                //frame++;
+                snapshotSection = false;
+            } //else frame = 0;*/
+            
+            if(recordStretch){
+                meshPBD->copy_from_device();
+                meshPBD->log_stretch();
+                frameToQuit--;
+                if(frameToQuit%150 == 0 && frameToQuit>250)
+                    acceleration.x -=200;
+            }
+            
+            if(recordVolume){
+                meshPBD->copy_from_device();
+                meshPBD->log_volume();
+                frameToQuit--;
+                if(frameToQuit == 500){
+                    acceleration = glm::vec3(0);
+                }
+            }
+            
+            if(frameToQuit == 0){
+                if(recordFPS) {
+                    fmt::print("solver iteration : {}, mesh resolution : {}, Average FPS on 1000 frames: {}", solverIterations, numSubdivisions, FPS/1000);
+                }
+                exit(1);
+            }
+            
+            //Time first N frames
+            static auto startTime = std::chrono::high_resolution_clock::now();
+            static float lastTime = 0.0f;
+            static int frameCapture = 10;
+            if(frameCapture>=0){
+                auto currentTime = std::chrono::high_resolution_clock::now();
+                float time = std::chrono::duration<float, std::chrono::milliseconds::period>
+                (currentTime - startTime).count();
+                fmt::print("Time elapsed: {} milliseconds\n", time-lastTime);
+                lastTime =+ time;
+            }
+            if(frameCapture == 0)
+            {
+                auto currentTime = std::chrono::high_resolution_clock::now();
+                float time = std::chrono::duration<float, std::chrono::milliseconds::period>
+                (currentTime - startTime).count();
+                fmt::print("Total time elapsed: {} milliseconds\n", time);
+            }
+            
+            frameCapture--;
+        }//end logging section
     }
 }
 
@@ -1033,6 +1042,7 @@ void VulkanEngine::cleanup(){
         vkb::destroy_debug_utils_messenger(_instance, _debug_messenger);
         vkDestroyInstance(_instance, nullptr);
         glfwDestroyWindow(_window);
+        outputCSV.close();
     }
 }
 
@@ -1088,6 +1098,43 @@ AllocatedBuffer VulkanEngine::create_copy_buffer(size_t allocSize, VkBufferUsage
     });
     
     return result;
+}
+
+void VulkanEngine::copy_buffer(size_t allocSize, VkBufferUsageFlags usage, VmaMemoryUsage memoryUsage, void* dataSrc, AllocatedBuffer dstBuffer){
+    AllocatedBuffer staging = create_buffer(allocSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VMA_MEMORY_USAGE_CPU_ONLY);
+    void* data = staging.allocation->GetMappedData();
+    
+    memcpy(data, dataSrc, allocSize);
+    
+    immediate_submit([&](VkCommandBuffer cmd){
+        VkBufferCopy dataCopy{ 0 };
+        dataCopy.dstOffset = 0;
+        dataCopy.srcOffset = 0;
+        dataCopy.size = allocSize;
+        
+        vkCmdCopyBuffer(cmd, staging.buffer, dstBuffer.buffer, 1, &dataCopy);
+    });
+    
+    destroy_buffer(staging);
+}
+
+void VulkanEngine::copy_buffer_from_device(size_t dataSize, void *dataDst, AllocatedBuffer srcBuffer){
+    AllocatedBuffer staging = create_buffer(dataSize, VK_BUFFER_USAGE_TRANSFER_DST_BIT, VMA_MEMORY_USAGE_CPU_ONLY);
+    
+    immediate_submit([&](VkCommandBuffer cmd){
+        VkBufferCopy dataCopy{ 0 };
+        dataCopy.dstOffset = 0;
+        dataCopy.srcOffset = 0;
+        dataCopy.size = dataSize;
+        
+        vkCmdCopyBuffer(cmd, srcBuffer.buffer, staging.buffer, 1, &dataCopy);
+    });
+    
+    void* data = staging.allocation->GetMappedData();
+    memcpy(dataDst, data, dataSize);
+    
+    destroy_buffer(staging);
+    return;
 }
 
 AllocatedBuffer VulkanEngine::create_buffer(size_t allocSize, VkBufferUsageFlags usage, VmaMemoryUsage memoryUsage)
@@ -1203,8 +1250,8 @@ GPUMeshBuffers VulkanEngine::uploadMesh(std::span<uint32_t> indices, std::span<V
     GPUMeshBuffers newSurface;
 
     //create vertex buffer
-    newSurface.vertexBuffer = create_buffer(vertexBufferSize, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-        VMA_MEMORY_USAGE_GPU_ONLY);
+    newSurface.vertexBuffer = create_buffer(vertexBufferSize, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                                            VMA_MEMORY_USAGE_GPU_ONLY);
 
     //find the adress of the vertex buffer
     VkBufferDeviceAddressInfo deviceAdressInfo{ .sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO,.buffer = newSurface.vertexBuffer.buffer };
